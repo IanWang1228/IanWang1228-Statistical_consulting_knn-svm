@@ -1,0 +1,172 @@
+---
+title: "統計諮詢期中報告"
+author: "王俞揚"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## 1.資料前處理
+
+```{r}
+# 載入所需的套件
+library(class)
+library(dplyr)
+library(caret) # 交叉驗證
+library(e1071)
+library(mice) #mice
+
+# 載入訓練和測試資料集
+train <- read.csv("C:/Users/Ian Wang/OneDrive/桌面/期中報告資料分析/train.csv")
+test <- read.csv("C:/Users/Ian Wang/OneDrive/桌面/期中報告資料分析/test.csv")
+```
+
+```{r}
+# 資料預處理
+
+# 進行訓練集&測試集missing value的多重差補
+mice_mod <- mice(train[, c("Age","Fare")], method='cart') # 用分類與回歸樹來填補缺失值
+mice_complete <- complete(mice_mod)
+mice_mod_2 <- mice(test[, c("Age","Fare")], method='cart') # 用分類與回歸樹來填補缺失值
+mice_complete_2 <- complete(mice_mod_2)
+
+
+# ps:也可以用線性迴歸(norm)或隨機森林(rf)來填補缺失值
+```
+
+```{r}
+# 將預測的缺失值轉移到主資料集中
+train$Age <- mice_complete$Age
+train$Fare <- mice_complete$Fare
+test$Age <- mice_complete_2$Age
+test$Fare <- mice_complete_2$Fare
+
+# 將 'Sex' 編碼為因子
+train$Sex <- as.factor(ifelse(train$Sex == "male", 0, 1))
+test$Sex <- as.factor(ifelse(test$Sex == "male", 0, 1))
+```
+
+```{r}
+# 移除不需要用於建模的欄位
+train <- train %>% select(-PassengerId, -Name, -Ticket, -Cabin)
+test <- test %>% select(-PassengerId, -Name, -Ticket, -Cabin)
+
+# 將 'Embarked' 編碼為因子
+train$Embarked <- as.factor(train$Embarked)
+test$Embarked <- as.factor(test$Embarked)
+
+# 確保 'Embarked' 的因子水平一致
+test$Embarked <- factor(test$Embarked, levels = levels(train$Embarked))
+```
+
+## 2.訓練knn模型
+
+```{r}
+# KNN 模型
+
+# 設定隨機種子以確保結果可重複
+set.seed(123)
+
+# 設定交叉驗證方法
+train_control <- trainControl(method = "cv", number = 10)
+# cv 表示使用的是 k-fold 交叉驗證
+
+# 使用 'caret' 的 train() 函數進行 KNN 模型訓練
+knn_fit <- train(Survived ~ ., data = train, method = "knn", trControl = train_control, tuneLength = 100)
+```
+
+```{r}
+# 查看 KNN 模型的交叉驗證結果
+print(knn_fit)
+```
+
+```{r}
+# 繪製 KNN 模型交叉驗證結果
+plot(knn_fit)
+```
+
+## 3.訓練svm模型
+
+```{r}
+# SVM 模型(徑向基核)
+svm_fit <- svm(Survived ~ ., data = train, kernel = "radial", cost = 1, gamma = 0.1)
+
+# SVM 模型(線性核)
+#svm_fit <- svm(Survived ~ ., data = train, kernel = "linear", cost = 1)
+
+# SVM 模型(多項式核)
+#svm_fit <- svm(Survived ~ ., data = train, kernel = "polynomial", degree = 3, cost = 1, gamma = 0.1)
+
+# kernel trick 除了 radial，也可以用 linear 或 polynomial
+```
+
+```{r}
+# 查看 SVM 模型的結果
+print(svm_fit)
+```
+
+## 4.使用測試集對模型進行預測，並將結果視覺化
+
+```{r}
+# 對測試集進行預測
+knn_predictions <- predict(knn_fit, newdata = test)
+svm_predictions <- predict(svm_fit, newdata = test)
+```
+
+```{r}
+# 載入必要的繪圖套件
+library(ggplot2)
+
+# 轉換預測結果為資料框
+test$KNN_Predictions <- knn_predictions
+test$SVM_Predictions <- svm_predictions
+```
+
+```{r}
+# 視覺化 KNN 預測結果，使用漸層顏色
+ggplot(test, aes(x = Pclass, y = Age, color = as.numeric(KNN_Predictions))) +
+  geom_point(alpha = 0.7) +
+  scale_color_gradientn(colors = c("#FF7744", "#FFFF33", "#33FF33", "#33FFFF", "#5555FF")) +  # 設置多層漸層顏色
+  scale_x_continuous(breaks = c(1, 2, 3)) +  # 只顯示 1、2、3
+  labs(title = "KNN 預測結果",
+       x = "客艙等級 (Pclass)",
+       y = "年齡 (Age)",
+       color = "生還機率") +  # 調整標籤以適應漸層顏色
+  theme_minimal()
+```
+
+```{r}
+# 視覺化 SVM 預測結果，使用漸層顏色
+ggplot(test, aes(x = Pclass, y = Age, color = as.numeric(SVM_Predictions))) +
+  geom_point(alpha = 0.7) +
+  scale_color_gradientn(colors = c("#FF7744", "#FFFF33", "#33FF33", "#33FFFF", "#5555FF")) +  # 設置多層漸層顏色
+  scale_x_continuous(breaks = c(1, 2, 3)) +  # 只顯示 1、2、3
+  labs(title = "SVM 預測結果",
+       x = "客艙等級 (Pclass)",
+       y = "年齡 (Age)",
+       color = "生還機率") +
+  theme_minimal()
+```
+
+## 5.評估模型性能
+
+```{r}
+# 計算模型準確率
+
+# 對訓練集進行預測
+knn_predictions_train <- predict(knn_fit, newdata = train)
+svm_predictions_train <- predict(svm_fit, newdata = train)
+
+# 將機率預測轉換為 0 或 1 (大於0.5轉換為1，反之則轉換為0)
+knn_predictions_train <- ifelse(knn_predictions_train > 0.5, 1, 0)
+svm_predictions_train <- ifelse(svm_predictions_train > 0.5, 1, 0)
+
+# 構建 KNN 的混淆矩陣
+knn_confusion <- confusionMatrix(factor(knn_predictions_train), factor(train$Survived))
+print("KNN 模型的混淆矩陣:")
+print(knn_confusion)
+
+# 構建 SVM 的混淆矩陣
+svm_confusion <- confusionMatrix(factor(svm_predictions_train), factor(train$Survived))
+print("SVM 模型的混淆矩陣:")
+print(svm_confusion)
+```
